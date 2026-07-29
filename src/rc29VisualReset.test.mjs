@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const main=fs.readFileSync(new URL('./main.jsx',import.meta.url),'utf8');
+const css=fs.readFileSync(new URL('./styles.css',import.meta.url),'utf8');
+assert(!main.includes('data-theme='),'Aucun attribut data-theme ne doit subsister.');
+assert(!main.includes('uiTheme'),'Aucun état de thème ne doit subsister.');
+assert(!main.includes('themeSelector'),'Le sélecteur de thèmes doit être supprimé.');
+assert(!main.includes("rc27-premium-themes.css"),'La feuille RC27 ne doit plus être importée.');
+assert(!main.includes("rc28-semantic-contrast.css"),'La feuille RC28 ne doit plus être importée.');
+assert(!/!important\b/i.test(css),'Aucun !important ne doit subsister dans la feuille principale.');
+assert(!/(^|[;{])\s*(?:color|background(?:-color|-image)?|border(?:-(?:top|right|bottom|left))?-color|outline-color|text-shadow|box-shadow|fill|stroke|-webkit-text-fill-color)\s*:/im.test(css),'Aucune règle CSS ne doit imposer de couleur.');
+console.log('RC29 visual reset tests: OK');
