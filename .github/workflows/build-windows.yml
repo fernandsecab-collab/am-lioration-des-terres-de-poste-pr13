@@ -1,0 +1,142 @@
+name: Windows Electron Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      NODE_ENV: development
+      NPM_CONFIG_PRODUCTION: "false"
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      ELECTRON_CACHE: ${{ github.workspace }}\.cache\electron
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\.cache\electron-builder
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify repository root
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "package.json")) {
+            Write-Host "Contenu présent à la racine :"
+            Get-ChildItem -Force | Select-Object Name, Mode, Length
+            throw "package.json est absent de la racine du dépôt. Importez le CONTENU du ZIP RC31, et non un dossier parent supplémentaire."
+          }
+          Write-Host "package.json trouvé à la racine du dépôt."
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ELECTRON_CACHE }}
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+          key: ${{ runner.os }}-electron-v31.7.7-builder-v25.1.8-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-v31.7.7-builder-v25.1.8-
+            ${{ runner.os }}-electron-
+
+      - name: Configure npm network retries
+        shell: pwsh
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config set fetch-retries 6
+          npm config set fetch-retry-factor 2
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 180000
+          npm config set fetch-timeout 600000
+
+      - name: Install dependencies
+        shell: pwsh
+        run: npm install --include=dev --include=optional --legacy-peer-deps --no-audit --no-fund
+
+      - name: Verify toolchain
+        shell: pwsh
+        run: |
+          node --version
+          npm --version
+          node ./node_modules/vite/bin/vite.js --version
+          node ./node_modules/electron-builder/out/cli/cli.js --version
+          node -e "console.log('Electron:', require('electron/package.json').version)"
+          node -e "console.log('esbuild:', require('esbuild').version, process.platform, process.arch)"
+
+      - name: Run automated tests
+        shell: pwsh
+        run: npm run test:all
+
+      - name: Build web application
+        shell: pwsh
+        run: npm run build
+
+      - name: Build Windows Setup with retry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 4
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Tentative Setup $attempt/$maxAttempts"
+            npm run dist:win:installer
+            if ($LASTEXITCODE -eq 0) { break }
+
+            if ($attempt -eq $maxAttempts) {
+              throw "Échec du Setup après $maxAttempts tentatives."
+            }
+
+            Write-Warning "Téléchargement ou packaging interrompu. Nouvelle tentative dans 20 secondes."
+            Get-ChildItem -Path $env:ELECTRON_CACHE -Filter "*.part" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 20
+          }
+
+      - name: Build Windows Portable with retry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Tentative Portable $attempt/$maxAttempts"
+            npm run dist:win:portable
+            if ($LASTEXITCODE -eq 0) { break }
+
+            if ($attempt -eq $maxAttempts) {
+              throw "Échec de la version portable après $maxAttempts tentatives."
+            }
+
+            Write-Warning "Packaging interrompu. Nouvelle tentative dans 15 secondes."
+            Get-ChildItem -Path $env:ELECTRON_CACHE -Filter "*.part" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 15
+          }
+
+      - name: List generated files
+        shell: pwsh
+        run: Get-ChildItem release/windows -Recurse | Select-Object FullName, Length
+
+      - name: Upload Windows Setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mesure-Amelioration-Terres-Poste-Transformation-RC31-Windows-Setup
+          path: release/windows/*Setup*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows Portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mesure-Amelioration-Terres-Poste-Transformation-RC31-Windows-Portable
+          path: release/windows/*Portable*.exe
+          if-no-files-found: error
+          retention-days: 14
